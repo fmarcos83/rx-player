@@ -7,7 +7,7 @@ const path = require("path");
 const webpackConfig = require("./webpack.config.js");
 
 // overwrite entries/output (ugly but just werks and did not find any better)
-webpackConfig.entry = path.join(__dirname, "../src/exports.js");
+webpackConfig.entry = path.join(__dirname, "../src/exports.ts");
 webpackConfig.output.path = path.join(__dirname, "../demo/standalone");
 webpackConfig.output.filename = "lib.js";
 

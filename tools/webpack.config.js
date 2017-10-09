@@ -87,6 +87,11 @@ if (["development", "production"].indexOf(RXP_ENV) < 0) {
 const webpack = require("webpack");
 
 const config = {
+  // devtool: "source-map",
+  resolve: {
+    // Add '.ts' and '.tsx' as resolvable extensions.
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".json"],
+  },
   output: {
     library: "RxPlayer",
     libraryTarget: "umd",
@@ -94,17 +99,24 @@ const config = {
   module: {
     rules: [
       {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: "babel-loader",
-          options: {
-            presets: [
-              "react",
-              ["es2015", { loose: true, modules: false }],
-            ],
-          },
-        },
+        // test: /\.(j|t)s$/,
+        // exclude: /node_modules/,
+        // use: {
+        //   loader: "babel-loader",
+        //   options: {
+        //     presets: [
+        //       "react",
+        //       ["es2015", { loose: true, modules: false }],
+        //     ],
+        //   },
+        // },
+      // }, {
+        test: /\.tsx?$/,
+        use: "ts-loader",
+        // }, {
+        //   enforce: "pre",
+        //   test: /\.js$/,
+        //   loader: "source-map-loader",
       },
     ],
   },
