@@ -15,16 +15,31 @@
  */
 
 import { Subject } from "rxjs/Subject";
+import { Observable  } from "rxjs/Observable";
 
 import arrayIncludes from "../../utils/array-includes";
+import Dictionary from "../../utils/dictonary";
 import assert from "../../utils/assert";
 
 import RepresentationChooser from "./representation_chooser";
+import { BeginPayload, ProgressPayload } from "./representation_chooser";
+import Representation from "../../manifest/representation";
 
 /**
  * Types of chunks accepted by the ABR logic.
  */
 const KNOWN_TYPES = ["audio", "video", "text", "image"];
+
+interface IncomingRequest {
+  type: string;
+  event: string;
+  value: ProgressPayload|BeginPayload;
+}
+
+interface Metric {
+  duration: number;
+  size: number;
+}
 
 /**
  * @param {string} type
@@ -36,10 +51,10 @@ const assertType = (type : string) =>
 /**
  * Create the right RepresentationChooser instance, from the given data.
  * @param {string} type
- * @param {Object} options
- * @returns {Observable} - The RepresentationChooser instance
+ * @param {any} options
+ * @returns {RepresentationChooser} - The RepresentationChooser instance
  */
-const createChooser = (type : string, options : any) => {
+const createChooser = (type : string, options : any): RepresentationChooser => {
   return new RepresentationChooser({
     limitWidth$: options.limitWidth[type],
     throttle$: options.throttle[type],
@@ -71,10 +86,10 @@ const lazilyAttachChooser = (instce : ABRManager, bufferType : string) => {
  */
 export default class ABRManager {
   // TODO privatize
-  public _choosers;
-  public _chooserInstanceOptions;
+  public _choosers:  Dictionary<RepresentationChooser>;
+  public _chooserInstanceOptions: any;
 
-  private _dispose$;
+  private _dispose$: Subject<void>;
 
   /**
    * @param {Observable} requests$ - Emit requests infos as they begin, progress
@@ -135,14 +150,12 @@ export default class ABRManager {
    *     - duration {Number}: duration of the request, in seconds.
    *     - size {Number}: size of the downloaded chunks, in bytes.
    *
-   * @param {Object} [options={}]
-   * @param {Object} [options.initialBitrates={}]
-   * @param {Object} [options.manualBitrates={}]
-   * @param {Object} [options.maxAutoBitrates={}]
-   * @param {Object} [options.throttle={}]
-   * @param {Object} [options.limitWidth={}]
+   * @param {ChooserOption} [options={}]
    */
-  constructor(requests$, metrics$, options : any = {}) {
+  constructor(
+    requests$: Observable<IncomingRequest[]>,
+    metrics$: Observable<{ type: string, value: Metric }>,
+    options : any = {}) {
     // Subject emitting and completing on dispose.
     // Used to clean up every created observables.
     this._dispose$ = new Subject();
@@ -195,13 +208,13 @@ export default class ABRManager {
           // This might be not optimal if this changes however. The best I think
           // for now is to just throw/warn in DEV mode when two pending ids
           // are identical
-          this._choosers[type].addPendingRequest(value.id, value);
+          this._choosers[type].addPendingRequest(value.id, value as BeginPayload);
           break;
         case "requestEnd":
           this._choosers[type].removePendingRequest(value.id);
           break;
         case "progress":
-          this._choosers[type].addRequestProgress(value.id, value);
+          this._choosers[type].addRequestProgress(value.id, value as ProgressPayload);
           break;
         }
       });
@@ -216,7 +229,11 @@ export default class ABRManager {
    * @param {Array.<Representation>} [representations=[]]
    * @returns {Observable}
    */
-  public get$(type : string, clock$, representations = []) {
+  public get$(
+    type : string,
+    clock$: Observable<any>,
+    representations: Representation[] = []
+  ): Observable<{}|{bitrate: undefined|number, Representation: Representation}> {
     if (__DEV__) {
       assertType(type);
     }
@@ -236,7 +253,7 @@ export default class ABRManager {
    * @param {string} type
    * @param {Number} bitrate
    */
-  public setManualBitrate(type : string, bitrate : number) {
+  public setManualBitrate(type : string, bitrate : number): void {
     if (__DEV__) {
       assertType(type);
     }
@@ -251,7 +268,7 @@ export default class ABRManager {
     }
   }
 
-  public setMaxAutoBitrate(type : string, bitrate : number) {
+  public setMaxAutoBitrate(type : string, bitrate : number): void {
     if (__DEV__) {
       assertType(type);
     }
@@ -266,7 +283,7 @@ export default class ABRManager {
     }
   }
 
-  public getManualBitrate(type : string) {
+  public getManualBitrate(type : string): number {
     if (__DEV__) {
       assertType(type);
     }
@@ -276,7 +293,7 @@ export default class ABRManager {
       this._chooserInstanceOptions.manualBitrates[type];
   }
 
-  public getMaxAutoBitrate(type : string) {
+  public getMaxAutoBitrate(type : string): number {
     if (__DEV__) {
       assertType(type);
     }
@@ -286,12 +303,12 @@ export default class ABRManager {
       this._chooserInstanceOptions.maxAutoBitrates[type];
   }
 
-  public dispose() {
+  public dispose(): void {
     Object.keys(this._choosers).forEach(type => {
       this._choosers[type].dispose();
     });
     this._chooserInstanceOptions = null;
-    this._choosers = null;
+    this._choosers = {};
     this._dispose$.next();
     this._dispose$.complete();
   }
