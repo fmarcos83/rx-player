@@ -22,9 +22,6 @@ import { Observable } from "rxjs/Observable";
 
 import config from "../../config";
 import assert from "../../utils/assert";
-import Dictionary from "../../utils/dictonary";
-
-// import takeFirstSet from "../../utils/takeFirstSet";
 
 import BandwidthEstimator from "./bandwidth_estimator";
 import filterByWidth from "./filterByWidth";
@@ -39,25 +36,54 @@ const {
   OUT_OF_STARVATION_GAP,
 } = config;
 
-interface Request {
-  requestData: BeginPayload;
-  progress: ProgressPayload[];
-}
-
-interface ProgressPayload {
-  id: number | string;
-  size: number;
-  timestamp: number;
-}
-
-interface BeginPayload {
-  id: number | string;
-  time: number;
-  duration: number;
+interface IRequestInfo {
+  time?: number;
+  duration?: number;
   requestTimestamp: number;
+  progress: Array<{
+    timestamp: number,
+    size: number,
+  }>;
 }
 
-interface Filters {
+interface IProgressRequest {
+  type: string;
+  event: "progress";
+  value: {
+    id: number | string,
+    size: number,
+    timestamp: number,
+  };
+}
+
+interface IEndRequest {
+  type: string;
+  event: "requestEnd";
+  value: {
+    id: number | string,
+  };
+}
+
+interface IBeginRequest {
+  type: string;
+  event: "requestBegin";
+  value: {
+    id: number | string,
+    time: number,
+    duration: number,
+    requestTimestamp: number,
+  };
+}
+
+interface IChooserOption {
+  initialBitrate?: number;
+  manualBitrate?: number;
+  maxAutoBitrate?: number;
+  throttle$?: Observable<number>;
+  limitWidth$?: Observable<number>;
+}
+
+interface IFilters {
   bitrate: number;
   width: number;
 }
@@ -65,14 +91,14 @@ interface Filters {
 /**
  * Returns an observable emitting only the representation concerned by the
  * bitrate ceil given.
- * @param {Representation[]} representations
+ * @param {Array.<Representation>} representations
  * @param {Number} bitrate
  * @returns {Observable}
  */
 const setManualRepresentation = (
   representations : Representation[],
   bitrate : number
-) : Observable<{}|{bitrate: number, representation: Representation}> => {
+) : Observable<{bitrate: number|undefined, representation: Representation}> => {
   const chosenRepresentation =
     fromBitrateCeil(representations, bitrate) ||
     representations[0];
@@ -80,19 +106,19 @@ const setManualRepresentation = (
   return Observable.of({
     bitrate: undefined, // Bitrate estimation is deactivated here
     representation: chosenRepresentation,
-  }).concat(Observable.never());
+  });
 };
 
 /**
  * Get the pending request containing the asked segment position.
  * @param {Object} requests
  * @param {Number} segmentPosition
- * @returns {Request|undefined}
+ * @returns {IRequestInfo|undefined}
  */
 const getConcernedRequest = (
-  requests : Dictionary<Request>,
+  requests : Dictionary<IRequestInfo>,
   segmentPosition : number
-) : Request|undefined => {
+) : IRequestInfo|undefined => {
   const currentRequestIds = Object.keys(requests);
   const len = currentRequestIds.length;
 
@@ -102,10 +128,10 @@ const getConcernedRequest = (
     const {
       time: chunkTime,
       duration: chunkDuration,
-    } = request.requestData;
+    } = request;
 
     // TODO review this
-    if (Math.abs(segmentPosition - chunkTime) < chunkDuration) {
+    if (chunkTime && chunkDuration && Math.abs(segmentPosition - chunkTime) < chunkDuration) {
       return request;
     }
   }
@@ -118,14 +144,14 @@ const getConcernedRequest = (
  * Use progress events if available, set a much more random lower bitrate
  * if no progress events are available.
  *
- * @param {Request} request
+ * @param {Object} request
  * @param {Number} requestTime - Amount of time the request has taken for now,
  * in seconds.
  * @param {Number} bitrate - Current bitrate at the time of download
  * @returns {Number}
  */
 const estimateRequestBandwidth = (
-  request : Request,
+  request : IRequestInfo,
   requestTime : number,
   bitrate : number
 ) : number => {
@@ -154,27 +180,29 @@ const estimateRequestBandwidth = (
   }
 
   // if that fails / no progress event, take a guess
-  if (!estimate) {
-    const chunkDuration = request.requestData.duration;
+  if (!estimate && request.duration) {
+    const chunkDuration = request.duration;
     const chunkSize = chunkDuration * bitrate;
 
     // take current duration of request as a base
     estimate = chunkSize / (requestTime * 5 / 4);
+  } else {
+    estimate = 0; // Not Supposed to enter this case XXX
   }
   return estimate;
 };
 
 /**
  * Filter representations given through filters options.
- * @param {Representation[]} representations
- * @param {Filters} filters
+ * @param {Array.<Representation>} representations
+ * @param {Object} filters
  * @param {Number} [filters.bitrate] - max bitrate authorized (included).
  * @param {Number} [filters.width] - max width authorized (included).
- * @returns {Representation[]}
+ * @returns {Array.<Representation>}
  */
 const getFilteredRepresentations = (
   representations : Representation[],
-  filters : Filters
+  filters : IFilters
 ) : Representation[] => {
   let _representations = representations;
 
@@ -234,7 +262,7 @@ export default class RepresentationChooser {
   public maxAutoBitrate$ : BehaviorSubject<number>;
 
   private _dispose$ : Subject<void>;
-  private _currentRequests : Dictionary<Request>;
+  private _currentRequests : Dictionary<IRequestInfo>;
   private _limitWidth$ : Observable<number>|undefined;
   private _throttle$ : Observable<number>|undefined;
   private estimator : BandwidthEstimator;
@@ -242,13 +270,8 @@ export default class RepresentationChooser {
 
   /**
    * @param {Object} options
-   * @param {Number} [options.manualBitrate=-1]
-   * @param {Number} [options.maxAutoBitrate=Infinity]
-   * @param {Number} [options.initialBitrate=0]
-   * @param {Observable} [options.limitWidth$]
-   * @param {Observable} [options.throttle$]
    */
-  constructor(options : any = {}) {
+  constructor(options : IChooserOption = {}) {
     this._dispose$ = new Subject();
 
     this.manualBitrate$ = new BehaviorSubject(
@@ -273,14 +296,13 @@ export default class RepresentationChooser {
   public get$(
     clock$ : Observable<any>,
     representations : Representation[]
-  ): Observable<{}|{bitrate: undefined|number, Representation: Representation}> {
+  ): Observable<{bitrate: undefined|number, representation: Representation|null}> {
     if (representations.length < 2) {
       return Observable.of({
         bitrate: undefined, // Bitrate estimation is deactivated here
         representation: representations.length ?
           representations[0] : null,
-      }).concat(Observable.never())
-      .takeUntil(this._dispose$);
+      });
     }
 
     let lastBitrate = this._initialBitrate;
@@ -343,7 +365,7 @@ export default class RepresentationChooser {
               const {
                 duration: chunkDuration,
                 requestTimestamp,
-              } = request.requestData;
+              } = request;
 
               const now = Date.now();
               const requestTimeInSeconds = (now - requestTimestamp) / 1000;
@@ -426,16 +448,20 @@ export default class RepresentationChooser {
    * This can be useful if the network bandwidth drastically changes to infer
    * a new bandwidth through this single request.
    * @param {string|Number} id
-   * @param {Segment} segment
+   * @param {Object} payload
    */
-  public addPendingRequest(id : string|number, payload : BeginPayload): void {
+  public addPendingRequest(id : string|number, payload: IBeginRequest): void {
     if (__DEV__) {
       assert(!this._currentRequests[id], "request already added");
     }
-    const { time, duration } = payload;
-    this._currentRequests[id].requestData.time = time;
-    this._currentRequests[id].requestData.duration = duration;
-    this._currentRequests[id].progress = [];
+    const { time, duration, requestTimestamp } = payload.value;
+
+    this._currentRequests[id] = {
+      time,
+      duration,
+      requestTimestamp,
+      progress: [],
+    };
   }
 
   /**
@@ -444,14 +470,14 @@ export default class RepresentationChooser {
    * request, in the case the user's bandwidth changes drastically while doing
    * it.
    * @param {string|Number} id
-   * @param {ProgressPayload} progress
+   * @param {Object} progress
    */
-  public addRequestProgress(id : string|number, progress : ProgressPayload): void {
+  public addRequestProgress(id : string|number, progress : IProgressRequest): void {
     if (__DEV__) {
       assert(this._currentRequests[id] &&
         this._currentRequests[id].progress, "not a valid request");
     }
-    this._currentRequests[id].progress.push(progress);
+    this._currentRequests[id].progress.push(progress.value);
   }
 
   /**
@@ -483,4 +509,9 @@ export default class RepresentationChooser {
   }
 }
 
-export { BeginPayload, ProgressPayload };
+export {
+  IBeginRequest,
+  IProgressRequest,
+  IEndRequest,
+  IChooserOption,
+};

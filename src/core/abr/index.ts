@@ -18,11 +18,15 @@ import { Subject } from "rxjs/Subject";
 import { Observable  } from "rxjs/Observable";
 
 import arrayIncludes from "../../utils/array-includes";
-import Dictionary from "../../utils/dictonary";
 import assert from "../../utils/assert";
 
 import RepresentationChooser from "./representation_chooser";
-import { BeginPayload, ProgressPayload } from "./representation_chooser";
+import {
+  IChooserOption,
+  IBeginRequest,
+  IProgressRequest,
+  IEndRequest
+} from "./representation_chooser";
 import Representation from "../../manifest/representation";
 
 /**
@@ -30,15 +34,14 @@ import Representation from "../../manifest/representation";
  */
 const KNOWN_TYPES = ["audio", "video", "text", "image"];
 
-interface IncomingRequest {
-  type: string;
-  event: string;
-  value: ProgressPayload|BeginPayload;
-}
-
 interface Metric {
   duration: number;
   size: number;
+}
+
+interface Metrics {
+  type: string;
+  value: Metric;
 }
 
 /**
@@ -51,17 +54,11 @@ const assertType = (type : string) =>
 /**
  * Create the right RepresentationChooser instance, from the given data.
  * @param {string} type
- * @param {any} options
+ * @param {Object} options
  * @returns {RepresentationChooser} - The RepresentationChooser instance
  */
-const createChooser = (type : string, options : any): RepresentationChooser => {
-  return new RepresentationChooser({
-    limitWidth$: options.limitWidth[type],
-    throttle$: options.throttle[type],
-    initialBitrate: options.initialBitrates[type],
-    manualBitrate: options.manualBitrates[type],
-    maxAutoBitrate: options.maxAutoBitrates[type],
-  });
+const createChooser = (type : string, options : Dictionary<IChooserOption>): RepresentationChooser => {
+  return new RepresentationChooser(options[type]);
 };
 
 /**
@@ -87,7 +84,7 @@ const lazilyAttachChooser = (instce : ABRManager, bufferType : string) => {
 export default class ABRManager {
   // TODO privatize
   public _choosers:  Dictionary<RepresentationChooser>;
-  public _chooserInstanceOptions: any;
+  public _chooserInstanceOptions: Dictionary<IChooserOption>;
 
   private _dispose$: Subject<void>;
 
@@ -150,12 +147,12 @@ export default class ABRManager {
    *     - duration {Number}: duration of the request, in seconds.
    *     - size {Number}: size of the downloaded chunks, in bytes.
    *
-   * @param {ChooserOption} [options={}]
+   * @param {Object} [options={}]
    */
   constructor(
-    requests$: Observable<IncomingRequest[]>,
-    metrics$: Observable<{ type: string, value: Metric }>,
-    options : any = {}) {
+    requests$: Observable<Array<(IProgressRequest | IBeginRequest | IEndRequest)>>,
+    metrics$: Observable<Metrics>,
+    options : Dictionary<IChooserOption> = {}) {
     // Subject emitting and completing on dispose.
     // Used to clean up every created observables.
     this._dispose$ = new Subject();
@@ -195,26 +192,27 @@ export default class ABRManager {
       // requests$ emits observables which are subscribed to
       .mergeMap(request$ => request$)
       .takeUntil(this._dispose$)
-      .subscribe(({ type, event, value }) => {
+      .subscribe(( request: IBeginRequest | IProgressRequest | IEndRequest ) => {
+        const { type } = request;
+        const { id } = request.value;
         if (__DEV__) {
           assertType(type);
         }
-
         lazilyAttachChooser(this, type);
-        switch (event) {
+        switch (request.event) {
         case "requestBegin":
           // use the id of the segment as in any case, we should only have at
           // most one active download for the same segment.
           // This might be not optimal if this changes however. The best I think
           // for now is to just throw/warn in DEV mode when two pending ids
           // are identical
-          this._choosers[type].addPendingRequest(value.id, value as BeginPayload);
+          this._choosers[type].addPendingRequest(id, request);
           break;
         case "requestEnd":
-          this._choosers[type].removePendingRequest(value.id);
+          this._choosers[type].removePendingRequest(id);
           break;
         case "progress":
-          this._choosers[type].addRequestProgress(value.id, value as ProgressPayload);
+          this._choosers[type].addRequestProgress(id, request);
           break;
         }
       });
@@ -233,7 +231,7 @@ export default class ABRManager {
     type : string,
     clock$: Observable<any>,
     representations: Representation[] = []
-  ): Observable<{}|{bitrate: undefined|number, Representation: Representation}> {
+  ): Observable<{bitrate: undefined|number, representation: Representation|null}> {
     if (__DEV__) {
       assertType(type);
     }
@@ -262,7 +260,7 @@ export default class ABRManager {
     if (!chooser) {
       // if no chooser yet, store as a chooser option for when it will be
       // effectively instantiated
-      this._chooserInstanceOptions.initialBitrates[type] = bitrate;
+      this._chooserInstanceOptions[type].initialBitrate = bitrate;
     } else {
       chooser.manualBitrate$.next(bitrate);
     }
@@ -277,37 +275,37 @@ export default class ABRManager {
     if (!chooser) {
       // if no chooser yet, store as a chooser option for when it will be
       // effectively instantiated
-      this._chooserInstanceOptions.maxAutoBitrates[type] = bitrate;
+      this._chooserInstanceOptions[type].maxAutoBitrate = bitrate;
     } else {
       chooser.maxAutoBitrate$.next(bitrate);
     }
   }
 
-  public getManualBitrate(type : string): number {
+  public getManualBitrate(type : string): number|undefined {
     if (__DEV__) {
       assertType(type);
     }
     const chooser = this._choosers[type];
     return chooser ?
       chooser.manualBitrate$.getValue() :
-      this._chooserInstanceOptions.manualBitrates[type];
+      this._chooserInstanceOptions[type].manualBitrate;
   }
 
-  public getMaxAutoBitrate(type : string): number {
+  public getMaxAutoBitrate(type : string): number|undefined {
     if (__DEV__) {
       assertType(type);
     }
     const chooser = this._choosers[type];
     return chooser ?
       chooser.maxAutoBitrate$.getValue() :
-      this._chooserInstanceOptions.maxAutoBitrates[type];
+      this._chooserInstanceOptions[type].maxAutoBitrate;
   }
 
   public dispose(): void {
     Object.keys(this._choosers).forEach(type => {
       this._choosers[type].dispose();
     });
-    this._chooserInstanceOptions = null;
+    this._chooserInstanceOptions = {};
     this._choosers = {};
     this._dispose$.next();
     this._dispose$.complete();

@@ -58,3 +58,11 @@ interface MediaKeySystemConfiguration {
 //   constructor(start : number, end : number, cueText : string);
 // }
 type VTTCue = TextTrackCue;
+
+/**
+ * Defines a simple and suggestive way to map data to string values.
+ * Equivalent to JS Map, but less wordy and costly. 
+ */
+interface Dictionary<T> {
+  [Key: string]: T;
+}
